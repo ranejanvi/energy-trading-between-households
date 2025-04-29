@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/**
+ * @title EnergyTrading
+ * @dev Smart contract for peer-to-peer energy trading between households
+ */
+contract EnergyTrading {
+    // Structs
+    struct EnergyOffer {
+        address seller;
+        uint256 energyAmount; // in kWh (x100 for decimal precision)
+        uint256 pricePerUnit; // in wei per kWh
+        bool isActive;
+    }
+
+    // State variables
+    mapping(address => uint256) public energyBalance; // User energy balance in kWh (x100)
+    mapping(address => uint256) public tokenBalance; // User token balance in wei
+    mapping(uint256 => EnergyOffer) public energyOffers;
+    uint256 public nextOfferId;
+    uint256 public transactionFee; // Fee percentage (100 = 1%)
+    address public owner;
+
+    // Events
+    event EnergyOfferCreated(uint256 indexed offerId, address indexed seller, uint256 energyAmount, uint256 pricePerUnit);
+    event EnergyPurchased(uint256 indexed offerId, address indexed buyer, address indexed seller, uint256 energyAmount, uint256 totalPrice);
+    event BalanceUpdated(address indexed user, uint256 newEnergyBalance, uint256 newTokenBalance);
+
+    // Constructor
+    constructor() {
+        owner = msg.sender;
+        transactionFee = 100; // 1% fee
+        nextOfferId = 1;
+    }
+
+    /**
+     * @dev Create an energy selling offer
+     * @param _energyAmount Amount of energy to sell in kWh (x100 for decimal precision)
+     * @param _pricePerUnit Price per kWh in wei
+     */
+    function createEnergyOffer(uint256 _energyAmount, uint256 _pricePerUnit) external {
+        require(_energyAmount > 0, "Energy amount must be greater than 0");
+        require(_pricePerUnit > 0, "Price must be greater than 0");
+        require(energyBalance[msg.sender] >= _energyAmount, "Insufficient energy balance");
+        
+        // Create new offer
+        energyOffers[nextOfferId] = EnergyOffer({
+            seller: msg.sender,
+            energyAmount: _energyAmount,
+            pricePerUnit: _pricePerUnit,
+            isActive: true
+        });
+        
+        // Update seller's energy balance
+        energyBalance[msg.sender] -= _energyAmount;
+        
+        emit EnergyOfferCreated(nextOfferId, msg.sender, _energyAmount, _pricePerUnit);
+        nextOfferId++;
+    }
+
+    /**
+     * @dev Purchase energy from an existing offer
+     * @param _offerId ID of the energy offer
+     * @param _energyAmount Amount of energy to purchase in kWh (x100)
+     */
+    function purchaseEnergy(uint256 _offerId, uint256 _energyAmount) external payable {
+        EnergyOffer storage offer = energyOffers[_offerId];
+        
+        require(offer.isActive, "Offer is not active");
+        require(_energyAmount > 0 && _energyAmount <= offer.energyAmount, "Invalid energy amount");
+        require(msg.sender != offer.seller, "Cannot buy your own energy");
+        
+        // Calculate costs
+        uint256 totalCost = _energyAmount * offer.pricePerUnit / 100;
+        uint256 feeAmount = totalCost * transactionFee / 10000;
+        uint256 sellerAmount = totalCost - feeAmount;
+        
+        require(msg.value >= totalCost, "Insufficient payment");
+        
+        // Process the transaction
+        offer.energyAmount -= _energyAmount;
+        if (offer.energyAmount == 0) {
+            offer.isActive = false;
+        }
+        
+        // Update balances
+        energyBalance[msg.sender] += _energyAmount;
+        tokenBalance[offer.seller] += sellerAmount;
+        tokenBalance[owner] += feeAmount;
+        
+        // Handle refund if overpaid
+        if (msg.value > totalCost) {
+            payable(msg.sender).transfer(msg.value - totalCost);
+        }
+        
+        emit EnergyPurchased(_offerId, msg.sender, offer.seller, _energyAmount, totalCost);
+        emit BalanceUpdated(msg.sender, energyBalance[msg.sender], tokenBalance[msg.sender]);
+        emit BalanceUpdated(offer.seller, energyBalance[offer.seller], tokenBalance[offer.seller]);
+    }
+
+    /**
+     * @dev Withdraw tokens from balance
+     * @param _amount Amount to withdraw in wei
+     */
+    function withdrawTokens(uint256 _amount) external {
+        require(tokenBalance[msg.sender] >= _amount, "Insufficient token balance");
+        
+        tokenBalance[msg.sender] -= _amount;
+        payable(msg.sender).transfer(_amount);
+        
+        emit BalanceUpdated(msg.sender, energyBalance[msg.sender], tokenBalance[msg.sender]);
+    }
+}
